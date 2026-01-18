@@ -15,14 +15,15 @@ struct PitchEvent {
 
 struct PitchTrack {
 	const float minHz, maxHz, bandwidthFactor;
-	PitchTrack(float minHz=20, float maxHz=8000, float bandwidthFactor=0.5f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthFactor) {
+	PitchTrack(float minHz=20, float maxHz=6000, float bandwidthFactor=0.25f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthFactor) {
 		float hz = minHz;
+		float bandFreqRatio = 1 + 0.15f*bandwidthFactor;
 		while (hz <= maxHz) {
 			bandHz.push_back(hz);
-			hz *= 1 + 0.15f*bandwidthFactor;
+			hz *= bandFreqRatio;
 		}
-		
-		size_t bands = bandHz.size();
+
+		bands = bandHz.size();
 		inputIndex.resize(bands);
 		inputIndexFrac.resize(bands);
 		inputReal.resize(bands);
@@ -32,9 +33,41 @@ struct PitchTrack {
 		filterTwistImag.resize(bands);
 		stateReal.resize(bands);
 		stateImag.resize(bands);
-		bandEnergy.resize(bands);
-	}
+		state2Real.resize(bands);
+		state2Imag.resize(bands);
 
+		// Generate the scoring kernel
+		size_t maxScoreHarmonic = 10;
+		size_t maxScoreKernelIndex = 0;
+		bandScoreKernel.resize(bands);
+		auto addToKernel = [&](float index, float weight){
+			size_t indexLow = std::floor(index);
+			float indexFrac = index - indexLow;
+			bandScoreKernel[indexLow] += weight*(1 - indexFrac);
+			bandScoreKernel[indexLow + 1] += weight*indexFrac;
+			maxScoreKernelIndex = std::max(maxScoreKernelIndex, indexLow + 1);
+		};
+		for (size_t h = 1; h < maxScoreHarmonic; ++h) {
+			float weight = 1 - h/float(maxScoreHarmonic);
+
+			addToKernel(std::log(2*h - 1)/std::log(bandFreqRatio), -weight);
+			addToKernel(std::log(2*h)/std::log(bandFreqRatio), weight);
+		}
+
+		size_t paddedBands = energyFft.fastSizeAbove(bands + maxScoreKernelIndex);
+		energyFft.resize(paddedBands);
+		bandScoreKernel.resize(paddedBands);
+		bandEnergy.resize(paddedBands);
+		bandScore.resize(paddedBands);
+
+		bandScoreSpectrum.resize(paddedBands/2);
+		bandScoreKernelSpectrum.resize(paddedBands/2);
+
+		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
+		linear(bandScoreKernelSpectrum) /= float(paddedBands);
+		linear(bandScoreKernelSpectrum) = linear(bandScoreKernelSpectrum).conj();
+	}
+	
 	void configure(float sampleRate, size_t maxBlockSize=0, size_t latencySamples=0, float overlap=4) {
 		if (!latencySamples) latencySamples = size_t(sampleRate*0.002);
 		
@@ -42,7 +75,6 @@ struct PitchTrack {
 		stft.configure(1, 0, latencySamples, 0, intervalSamples);
 		
 		// Input bin indices
-		size_t bands = bandHz.size();
 		for (size_t b = 0; b < bands; ++b) {
 			auto hz = bandHz[b];
 			auto bin = stft.freqToBin(hz/sampleRate);
@@ -65,9 +97,13 @@ struct PitchTrack {
 		}
 		
 		events.reserve(maxBlockSize/intervalSamples + 1);
-		events.resize(0);
+		reset();
 	}
-	
+
+	size_t latencySamples() const {
+		return stft.blockSamples();
+	}
+
 	const std::vector<PitchEvent> & updates() const {
 		return events;
 	}
@@ -76,7 +112,9 @@ struct PitchTrack {
 		events.resize(0);
 		stft.reset();
 		linear(stateReal, stateImag) = 0;
+		linear(state2Real, state2Imag) = 0;
 		linear(bandEnergy) = 0;
+		linear(bandScore) = 0;
 	}
 	
 	void block(const float *buffer, size_t length) {
@@ -85,6 +123,7 @@ struct PitchTrack {
 			stft.writeInput(0, 1, buffer + i);
 			stft.moveInput(1);
 			if (stft.samplesSinceAnalysis() >= stft.defaultInterval()) {
+				blockOffset = i;
 				analyseBlock();
 			}
 		}
@@ -96,21 +135,35 @@ struct PitchTrack {
 	const std::vector<float> & debugEnergy() const {
 		return bandEnergy;
 	}
+	const std::vector<float> & debugScore() const {
+		return bandScore;
+	}
+	const std::vector<float> & debugScoreKernel() const {
+		return bandScoreKernel;
+	}
 	
 private:
 	using Complex = std::complex<float>;
 
 	std::vector<PitchEvent> events;
 	signalsmith::linear::DynamicSTFT<float> stft;
+	signalsmith::linear::RealFFT<float> energyFft;
 	signalsmith::linear::Linear linear;
 
+	size_t bands;
 	std::vector<float> bandHz;
 	std::vector<size_t> inputIndex;
 	std::vector<float> inputIndexFrac;
 	std::vector<float> inputReal, inputImag;
 	std::vector<float> filterGain, filterTwistReal, filterTwistImag;
 	std::vector<float> stateReal, stateImag;
+	std::vector<float> state2Real, state2Imag;
 	std::vector<float> bandEnergy;
+
+	std::vector<float> bandScoreKernel;
+	std::vector<Complex> bandScoreKernelSpectrum;
+	std::vector<Complex> bandScoreSpectrum;
+	std::vector<float> bandScore;
 
 	void analyseBlock() {
 		for (size_t s = 0; s < analyseSteps; ++s) {
@@ -118,10 +171,9 @@ private:
 		}
 	}
 
+	size_t blockOffset = 0;
 	static constexpr size_t analyseSteps = 100;
 	void analyseBlock(size_t step) {
-		size_t bands = bandHz.size();
-
 		if (!step--) {
 			stft.analyse();
 		} else if (!step--) {
@@ -138,8 +190,24 @@ private:
 			auto gain = linear(filterGain);
 			auto twist = linear(filterTwistReal, filterTwistImag);
 			auto state = linear(stateReal, stateImag);
+			auto state2 = linear(state2Real, state2Imag);
 			state = state*twist + input*gain;
-			linear(bandEnergy) = state.norm();
+			state2 = state2*twist + state*gain;
+			
+			auto energy = linear(bandEnergy.data(), bandHz.size()); // un-padded size
+			energy = state2.norm();
+			energy *= 1/float(stft.blockSamples()*stft.blockSamples());
+		} else if (!step--) {
+			energyFft.fft(bandEnergy.data(), bandScoreSpectrum.data());
+			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
+			energyFft.ifft(bandScoreSpectrum.data(), bandScore.data());
+		} else if (!step--) {
+			for (auto &v : bandScore) v = std::max<float>(v, 0);
+//			for (size_t b = 0; b < bands; ++b) {
+//				bandScore[b] = std::max<float>(bandScoreKernel[b], 0);
+//			}
+		} else if (!step--) {
+			events.push_back({0, 0, blockOffset});
 		}
 	}
 };
