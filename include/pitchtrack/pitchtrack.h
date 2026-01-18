@@ -56,9 +56,7 @@ struct PitchTrack {
 				ratio = std::pow(bandFreqRatio, -int(paddedBands - b));
 			};
 			if (ratio > minScoreHarmonic && ratio < maxScoreHarmonic) {
-				float w = (1 - std::cos(float(2*M_PI)*ratio))/2;
-w *= w*(3 - 2*w);
-w *= w*(3 - 2*w);
+				float w = std::cos(float(2*M_PI)*ratio);
 				bandScoreKernel[b] = w;
 			}
 		}
@@ -202,6 +200,25 @@ private:
 			
 			auto energy = linear(bandEnergy.data(), bandHz.size()); // un-padded size
 			energy = state2.norm();
+//energy = energy.sqrt();
+//		} else if (!step--) {
+//			float slew = 1/(1.0f + scoreKernelLeadIn*0.05f);
+//			float e = 0;
+//			for (size_t b = 0; b < paddedBands; ++b) {
+//				bandScore[b] = e += (bandEnergy[b] - e)*slew;
+//			}
+//			for (size_t b = paddedBands; b-- > 0;) {
+//				bandScore[b] = e += (bandScore[b] - e)*slew;
+//			}
+//			linear(bandEnergy) -= linear(bandScore);
+//			linear(bandEnergy) = linear.max(linear(bandEnergy), 0);
+//		} else if (!step--) {
+//			for (size_t b = 1; b < bands - 1; ++b) {
+//				auto prev = bandEnergy[b - 1], next = bandEnergy[b + 1];
+//				if (bandEnergy[b] > prev && bandEnergy[b] >= next) {
+//					bandEnergy[b] *= 100;
+//				}
+//			}
 		} else if (!step--) {
 			energyFft.fft(bandEnergy.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
@@ -209,18 +226,12 @@ private:
 		} else if (!step--) {
 			// Cumulative sum
 			float sum = 1e-30f;
-			for (size_t b = 0; b < bands + scoreKernelLength; ++b) {
+			for (size_t b = 0; b < bands; ++b) {
 				sum += bandEnergy[b];
 				bandScoreRef[b] = sum;
 			}
-			for (size_t b = 0; b + scoreKernelLeadIn < paddedBands; ++b) {
-				bandScore[b + scoreKernelLeadIn] += bandScoreRef[b];
-			}
-			for (size_t b = 0; b < bands; ++b) {
-				bandScore[b] /= bandScoreRef[b + scoreKernelLength];
-				bandScore[b] = 1 - bandScore[b];
-			}
 			linear(bandScoreRef) /= sum;
+			linear(bandScore) /= sum;
 			for (auto &v : bandScore) v = std::max<float>(v, 0);
 		} else if (!step--) {
 			events.push_back({0, 0, blockOffset});

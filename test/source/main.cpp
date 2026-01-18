@@ -9,6 +9,10 @@
 
 #include "signalsmith-plot/plot.h"
 #include "signalsmith-dsp/curves.h"
+#include "signalsmith-dsp/filters.h"
+
+#include <array>
+
 double hzToBark(double hz) {
 	auto barkScale = signalsmith::curves::Reciprocal<double>::barkScale();
 	return barkScale.inverse(hz);
@@ -23,6 +27,7 @@ int main(int argc, char *argv[]) {
 	double svgPlotSpeed = args.flag("plot-speed", "plot animation rate (compared to realtime)", 0.1);
 	bool hasPlot = !svgPlotPath.empty();
 	std::string svgPlotRef = args.flag("plot-ref", "reference (seconds,hz) CSV", "");
+	double highpassHz = args.flag("highpass", "highpass (0=off)", 400);
 	args.errorExit();
 	
 	if (outCsvPath.empty()) outCsvPath = inWavPath + ".csv";
@@ -35,6 +40,13 @@ int main(int argc, char *argv[]) {
 	std::vector<float> input;
 	input.resize(wav.samples.size());
 	for (size_t i = 0; i < input.size(); ++i) input[i] = float(wav.samples[i]);
+	if (highpassHz > 0) {
+		std::array<signalsmith::filters::BiquadStatic<float>, 2> filters;
+		for (auto &f : filters) f.highpass(highpassHz/wav.sampleRate);
+		for (auto &v : input) {
+			for (auto &f : filters) v = f(v);
+		}
+	}
 	
 	signalsmith::pitchtrack::PitchTrack tracker;
 	tracker.configure(wav.sampleRate, input.size());
