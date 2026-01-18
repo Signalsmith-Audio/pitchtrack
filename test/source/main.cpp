@@ -52,9 +52,9 @@ int main(int argc, char *argv[]) {
 	if (hasPlot) { // Process again
 		signalsmith::plot::Figure figure;
 		auto &energyPlot = figure.plot(600, 200);
-		energyPlot.x.major(0).minors(100, 200, 500, 1000, 2000, 5000).range(hzToBark, 20, 8000).label("Hz");
+		energyPlot.x.major(0).minors(100, 200, 500, 1000, 2000, 5000).range(hzToBark, 0, 8000).label("Hz");
 		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-90, 0).label("dB");
-		auto &scoreY = energyPlot.newY().copyFrom(energyPlot.y).flip().label("score");
+		auto &scoreY = energyPlot.newY().flip().major(0).minor(1).linear(0, 1).label("score");
 
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
@@ -91,6 +91,7 @@ int main(int argc, char *argv[]) {
 			tracker.reset();
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
+			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
 			
 			size_t blockSize = 16;
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {
@@ -105,28 +106,28 @@ int main(int argc, char *argv[]) {
 				auto &hz = tracker.debugHz();
 				auto &energy = tracker.debugEnergy();
 				auto &score = tracker.debugScore();
+				auto &scoreRef = tracker.debugScoreRef();
 				size_t bestB = 0;
 				float bestBScore = 0;
 				for (size_t b = 0; b < hz.size(); ++b) {
 					auto db = 10*std::log10(energy[b] + float(1e-30));
 					energyLine.add(hz[b], db);
 
-					auto scoreDb = 10*std::log10(score[b] + float(1e-30));
-					scoreLine.add(hz[b], scoreDb);
-					
+					scoreLine.add(hz[b], score[b]);
+
+					scoreRefLine.add(hz[b], scoreRef[b]);
+
 					if (score[b] > bestBScore) {
 						bestBScore = score[b];
 						bestB = b;
 					}
 				}
-				{
-					auto b = bestB;
-					auto scoreDb = 10*std::log10(score[b] + float(1e-30));
-					scoreLine.marker(hz[b], scoreDb);
-				}
+				scoreLine.marker(hz[bestB], score[bestB]);
 
-				energyLine.toFrame(sampleIndex/svgPlotSpeed/wav.sampleRate);
-				scoreLine.toFrame(sampleIndex/svgPlotSpeed/wav.sampleRate);
+				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
+				energyLine.toFrame(frameTime);
+				scoreLine.toFrame(frameTime);
+				scoreRefLine.toFrame(frameTime);
 			}
 		}
 
