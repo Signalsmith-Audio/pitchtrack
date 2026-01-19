@@ -17,6 +17,9 @@ double hzToBark(double hz) {
 	auto barkScale = signalsmith::curves::Reciprocal<double>::barkScale();
 	return barkScale.inverse(hz);
 }
+double hzToLogIsh(double hz) {
+	return std::log(hz + 20);
+}
 
 int main(int argc, char *argv[]) {
 	SimpleArgs args{argc, argv};
@@ -27,7 +30,7 @@ int main(int argc, char *argv[]) {
 	double svgPlotSpeed = args.flag("plot-speed", "plot animation rate (compared to realtime)", 0.1);
 	bool hasPlot = !svgPlotPath.empty();
 	std::string svgPlotRef = args.flag("plot-ref", "reference (seconds,hz) CSV", "");
-	double highpassHz = args.flag("highpass", "highpass (0=off)", 400);
+	double highpassHz = args.flag("highpass", "highpass (0=off)", 0);
 	args.errorExit();
 	
 	if (outCsvPath.empty()) outCsvPath = inWavPath + ".csv";
@@ -64,13 +67,15 @@ int main(int argc, char *argv[]) {
 	if (hasPlot) { // Process again
 		signalsmith::plot::Figure figure;
 		auto &energyPlot = figure.plot(600, 200);
-		energyPlot.x.major(0).minors(100, 200, 500, 1000, 2000, 5000).range(hzToBark, 0, 8000).label("Hz");
-		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-90, 0).label("dB");
-		auto &scoreY = energyPlot.newY().flip().major(0).minor(1).linear(0, 1).label("score");
+		energyPlot.x.major(0).minors(20, 100, 200, 500, 1000, 2000, 5000).range(hzToLogIsh, 20, 6000).label("Hz");
+		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-80, 0).label("dB");
+		auto &scoreY = energyPlot.newY().flip().minors(-1, 1).label("score");
+		auto &legend = energyPlot.legend(1, 1);
 
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
 			auto &refLine = energyPlot.line(4);
+			legend.add(refLine, "reference");
 			
 			std::ifstream csv{svgPlotRef};
 			if (!csv) args.errorExit("Failed to open CSV");
@@ -99,13 +104,15 @@ int main(int argc, char *argv[]) {
 
 		size_t overlap = 4;
 		{
-			tracker.configure(wav.sampleRate, 0, 0, overlap);
+			size_t blockSize = 16;
+			tracker.configure(wav.sampleRate, blockSize, 0, overlap);
 			tracker.reset();
+			auto &hz = tracker.debugHz();
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
+			legend.add(energyLine, "energy").add(scoreLine, "score").add(scoreRefLine, "score kernel");
 			
-			size_t blockSize = 16;
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {
 				size_t actualBlockSize = std::min<size_t>(blockSize, input.size() - blockStart);
 				tracker.block(input.data() + blockStart, actualBlockSize);
@@ -115,10 +122,8 @@ int main(int argc, char *argv[]) {
 				int sampleIndex = int(blockStart + update.offset) - tracker.latencySamples();
 				if (sampleIndex < 0) continue; // it breaks for t < 0
 
-				auto &hz = tracker.debugHz();
 				auto &energy = tracker.debugEnergy();
 				auto &score = tracker.debugScore();
-				auto &scoreRef = tracker.debugScoreRef();
 				size_t bestB = 0;
 				float bestBScore = 0;
 				for (size_t b = 0; b < hz.size(); ++b) {
@@ -126,8 +131,6 @@ int main(int argc, char *argv[]) {
 					energyLine.add(hz[b], db);
 
 					scoreLine.add(hz[b], score[b]);
-
-					scoreRefLine.add(hz[b], scoreRef[b]);
 
 					if (score[b] > bestBScore) {
 						bestBScore = score[b];
@@ -139,7 +142,11 @@ int main(int argc, char *argv[]) {
 				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
 				energyLine.toFrame(frameTime);
 				scoreLine.toFrame(frameTime);
-				scoreRefLine.toFrame(frameTime);
+			}
+
+			auto &scoreRef = tracker.debugScoreKernel();
+			for (size_t b = 0; b < hz.size(); ++b) {
+				scoreRefLine.add(hz[b], scoreRef[b]);
 			}
 		}
 
