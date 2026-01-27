@@ -66,11 +66,12 @@ int main(int argc, char *argv[]) {
 
 	if (hasPlot) { // Process again
 		signalsmith::plot::Figure figure;
+		figure.style.precision = 10; // the SVGs are huge, take the edge off a bit
 		auto &energyPlot = figure.plot(600, 200);
 		energyPlot.x.major(0).minors(20, 100, 200, 500, 1000, 2000, 5000).range(hzToLogIsh, 20, 6000).label("Hz");
 		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-80, 0).label("dB");
-		auto &scoreY = energyPlot.newY().flip().minors(-1, 1).label("score");
-		auto &legend = energyPlot.legend(1, 1);
+		auto &scoreY = energyPlot.newY().flip().tick(0).label("score");
+		auto &legend = energyPlot.legend(0, 1);
 
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
@@ -111,7 +112,8 @@ int main(int argc, char *argv[]) {
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
-			legend.add(energyLine, "energy").add(scoreLine, "score").add(scoreRefLine, "score kernel");
+			auto &scoreKernelLine = energyPlot.fill(energyPlot.x, energyPlot.newY().blank()).fillToY(0);
+			legend.add(energyLine, "energy").add(scoreLine, "score (result)").add(scoreRefLine, "score (raw)").add(scoreKernelLine, "score kernel");
 			
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {
 				size_t actualBlockSize = std::min<size_t>(blockSize, input.size() - blockStart);
@@ -123,6 +125,7 @@ int main(int argc, char *argv[]) {
 				if (sampleIndex < 0) continue; // it breaks for t < 0
 
 				auto &energy = tracker.debugEnergy();
+				auto &scoreRef = tracker.debugScoreRef();
 				auto &score = tracker.debugScore();
 				size_t bestB = 0;
 				float bestBScore = 0;
@@ -130,6 +133,7 @@ int main(int argc, char *argv[]) {
 					auto db = 10*std::log10(energy[b] + float(1e-30));
 					energyLine.add(hz[b], db);
 
+					scoreRefLine.add(hz[b], scoreRef[b]);
 					scoreLine.add(hz[b], score[b]);
 
 					if (score[b] > bestBScore) {
@@ -141,19 +145,29 @@ int main(int argc, char *argv[]) {
 
 				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
 				energyLine.toFrame(frameTime);
+				scoreRefLine.toFrame(frameTime);
 				scoreLine.toFrame(frameTime);
-			}
 
-			auto &scoreRef = tracker.debugScoreKernel();
-			for (size_t b = 0; b < hz.size(); ++b) {
-				scoreRefLine.add(hz[b], scoreRef[b]);
+				auto &scoreKernel = tracker.debugScoreKernel();
+				for (size_t b = 0; b < scoreRef.size(); ++b) {
+					size_t offsetB = (b + bestB)%scoreKernel.size();
+					if (offsetB >= hz.size()) {
+						scoreKernelLine.cut();
+						continue;
+					}
+					scoreKernelLine.add(hz[offsetB], scoreKernel[b]);
+				}
+				scoreKernelLine.toFrame(frameTime);
+				
 			}
 		}
 
 		// synchronise loop times
 		figure.loopFrame(wav.length()/svgPlotSpeed/wav.sampleRate);
 
+		std::cout << "writing SVG...";
 		figure.write(svgPlotPath);
+		std::cout << " done\n";
 	}
 
 	for (auto &event : tracker.updates()) {

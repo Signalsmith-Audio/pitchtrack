@@ -18,6 +18,7 @@ struct PitchTrack {
 	PitchTrack(float minHz=20, float maxHz=6000, float bandwidthFactor=0.25f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthFactor) {
 		float hz = minHz;
 		float bandFreqRatio = 1 + 0.15f*bandwidthFactor;
+		float octaveBands = std::log(2.0f)/std::log(bandFreqRatio);
 		while (hz <= maxHz) {
 			bandHz.push_back(hz);
 			hz *= bandFreqRatio;
@@ -36,7 +37,6 @@ struct PitchTrack {
 		state2Real.resize(bands);
 		state2Imag.resize(bands);
 
-		float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.5f;
 		scoreKernelLength = std::log(maxScoreHarmonic/minScoreHarmonic)/std::log(bandFreqRatio);
 		scoreKernelLeadIn = std::log(1/minScoreHarmonic)/std::log(bandFreqRatio);
 		
@@ -45,7 +45,8 @@ struct PitchTrack {
 		bandScoreKernel.resize(paddedBands);
 		bandEnergy.resize(paddedBands);
 		bandScore.resize(paddedBands);
-		bandScoreRef.resize(paddedBands);
+		bandScoreResult.resize(paddedBands);
+		bandScoreCumulativeSum.resize(paddedBands);
 		bandScoreSpectrum.resize(paddedBands/2);
 		bandScoreKernelSpectrum.resize(paddedBands/2);
 
@@ -56,10 +57,34 @@ struct PitchTrack {
 				ratio = std::pow(bandFreqRatio, -int(paddedBands - b));
 			};
 			if (ratio > minScoreHarmonic && ratio < maxScoreHarmonic) {
-				float w = std::cos(float(2*M_PI)*ratio);
-				bandScoreKernel[b] = w;
+				bandScoreKernel[b] = scoreKernel(ratio);
 			}
 		}
+		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
+		// highpass (mean kernel = 0 locally)
+		linear(bandScoreKernelSpectrum.data(), size_t(octaveBands/2)) = 0;
+		energyFft.ifft(bandScoreKernelSpectrum.data(), bandScoreKernel.data());
+		// Apply window
+		for (size_t b = 0; b < paddedBands; ++b) {
+			float w = 0;
+			if (b > paddedBands - scoreKernelLeadIn) {
+				float ratio = (b + scoreKernelLeadIn - paddedBands)/float(scoreKernelLeadIn);
+				w = ratio;
+			} else if (b < scoreKernelLength - scoreKernelLeadIn) {
+				float ratio = b/float(scoreKernelLength - scoreKernelLeadIn);
+				w = 1 - ratio;
+			}
+			bandScoreKernel[b] *= w;
+		}
+//		scoreWeightBelow = scoreKernel(minScoreHarmonic);
+		scoreWeightBelow = 0;
+
+		// normalise kernel to ~1 total energy
+		float kernelSum2 = 0;
+		for (auto &k : bandScoreKernel) kernelSum2 += k*k;
+		linear(bandScoreKernel) /= std::sqrt(kernelSum2);
+		scoreWeightBelow /= std::sqrt(kernelSum2);
+		
 		// and store in the frequency domain
 		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
 		bandScoreKernelSpectrum[0].imag(0);
@@ -136,10 +161,10 @@ struct PitchTrack {
 		return bandEnergy;
 	}
 	const std::vector<float> & debugScore() const {
-		return bandScore;
+		return bandScoreResult;
 	}
-	const std::vector<float> & debugScoreRef() {
-		return bandScoreRef;
+	const std::vector<float> & debugScoreRef() const {
+		return bandScore;
 	}
 	const std::vector<float> & debugScoreKernel() const {
 		return bandScoreKernel;
@@ -163,12 +188,12 @@ private:
 	std::vector<float> state2Real, state2Imag;
 	std::vector<float> bandEnergy;
 
-	float scoreWeightBelow = -1;
+	float scoreWeightBelow = 0;
 	size_t scoreKernelLength, scoreKernelLeadIn;
 	std::vector<float> bandScoreKernel;
 	std::vector<Complex> bandScoreKernelSpectrum;
 	std::vector<Complex> bandScoreSpectrum;
-	std::vector<float> bandScore, bandScoreRef;
+	std::vector<float> bandScore, bandScoreResult, bandScoreCumulativeSum;
 
 	void analyseBlock() {
 		for (size_t s = 0; s < analyseSteps; ++s) {
@@ -202,28 +227,46 @@ private:
 			auto energy = linear(bandEnergy.data(), bands); // un-padded size
 			energy = state2.norm();
 		} else if (!step--) {
-			linear(bandScore) = linear(bandEnergy).sqrt();
+			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt().sqrt();
+			for (size_t b = 0; b < bands; ++b) {
+				bandScore[b] *= (bands - b);
+			}
+			for (size_t b = bands; b < paddedBands; ++b) {
+				bandScore[b] = 0;
+			}
+
+			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
+			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
+			energyFft.ifft(bandScoreSpectrum.data(), bandScoreResult.data());
+		} else if (!step--) {
 			// Cumulative sum
 			float sum = 1e-30f;
 			for (size_t b = 0; b < bands; ++b) {
 				sum += bandScore[b];
-				bandScoreRef[b] = sum;
+				bandScoreCumulativeSum[b] = sum;
 			}
-			// Normalise (mostly for convenient debugging)
-			linear(bandScoreRef) /= sum;
-			linear(bandScore) /= sum;
-
-			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
-			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
-			energyFft.ifft(bandScoreSpectrum.data(), bandScore.data());
-		} else if (!step--) {
 			for (size_t b = scoreKernelLeadIn; b < bands; ++b) {
-				bandScore[b] += scoreWeightBelow*bandScoreRef[b - scoreKernelLeadIn];
+				bandScoreResult[b] += scoreWeightBelow*bandScoreCumulativeSum[b - scoreKernelLeadIn];
 			}
- 			for (auto &v : bandScore) v = std::max<float>(v, 0);
+			
+ 			//for (auto &v : bandScore) v = std::max<float>(v, 0);
 		} else if (!step--) {
 			events.push_back({0, 0, blockOffset});
 		}
+	}
+	
+	static constexpr float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.5f;
+	static float scoreKernel(float harmonic) {
+//		float sum = 0;
+//		for (size_t i = 1; i < 10; ++i) {
+//			float d = (harmonic/i - 1)*10;
+//			sum += std::exp(-d*d)/i;
+//		}
+//		return sum;
+
+		auto ratio = harmonic/maxScoreHarmonic;
+//		return (1 + std::cos(float(2*M_PI)*harmonic))*std::sqrt(harmonic - minScoreHarmonic)*(1 - ratio);
+		return std::pow(0.5f + 0.5f*std::cos(float(2*M_PI)*harmonic), 4.0f/(harmonic + 1));
 	}
 };
 
