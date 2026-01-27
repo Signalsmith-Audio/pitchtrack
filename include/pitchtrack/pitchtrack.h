@@ -17,8 +17,8 @@ struct PitchTrack {
 	const float minHz, maxHz, bandwidthFactor;
 	PitchTrack(float minHz=20, float maxHz=6000, float bandwidthFactor=0.25f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthFactor) {
 		float hz = minHz;
-		float bandFreqRatio = 1 + 0.15f*bandwidthFactor;
-		float octaveBands = std::log(2.0f)/std::log(bandFreqRatio);
+		bandFreqRatio = 1 + 0.15f*bandwidthFactor;
+		octaveBands = std::log(2.0f)/std::log(bandFreqRatio);
 		while (hz <= maxHz) {
 			bandHz.push_back(hz);
 			hz *= bandFreqRatio;
@@ -30,6 +30,7 @@ struct PitchTrack {
 		inputReal.resize(bands);
 		inputImag.resize(bands);
 		filterGain.resize(bands);
+		filterWeights.resize(bands);
 		filterTwistReal.resize(bands);
 		filterTwistImag.resize(bands);
 		stateReal.resize(bands);
@@ -60,31 +61,14 @@ struct PitchTrack {
 				bandScoreKernel[b] = scoreKernel(ratio);
 			}
 		}
-		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
-		// highpass (mean kernel = 0 locally)
-		linear(bandScoreKernelSpectrum.data(), size_t(octaveBands/2)) = 0;
-		energyFft.ifft(bandScoreKernelSpectrum.data(), bandScoreKernel.data());
-		// Apply window
-		for (size_t b = 0; b < paddedBands; ++b) {
-			float w = 0;
-			if (b > paddedBands - scoreKernelLeadIn) {
-				float ratio = (b + scoreKernelLeadIn - paddedBands)/float(scoreKernelLeadIn);
-				w = ratio;
-			} else if (b < scoreKernelLength - scoreKernelLeadIn) {
-				float ratio = b/float(scoreKernelLength - scoreKernelLeadIn);
-				w = 1 - ratio;
-			}
-			bandScoreKernel[b] *= w;
-		}
-//		scoreWeightBelow = scoreKernel(minScoreHarmonic);
-		scoreWeightBelow = 0;
+		scoreWeightBelow = scoreKernel(minScoreHarmonic);
 
 		// normalise kernel to ~1 total energy
 		float kernelSum2 = 0;
 		for (auto &k : bandScoreKernel) kernelSum2 += k*k;
 		linear(bandScoreKernel) /= std::sqrt(kernelSum2);
 		scoreWeightBelow /= std::sqrt(kernelSum2);
-		
+
 		// and store in the frequency domain
 		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
 		bandScoreKernelSpectrum[0].imag(0);
@@ -117,6 +101,8 @@ struct PitchTrack {
 			float absTwist = std::exp(logTwist.real());
 			Complex twist = std::polar(absTwist, logTwist.imag());
 			filterGain[b] = (1 - absTwist); // 0dB peak
+			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight
+			filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
 			filterTwistReal[b] = twist.real();
 			filterTwistImag[b] = twist.imag();
 		}
@@ -172,6 +158,10 @@ struct PitchTrack {
 	
 private:
 	using Complex = std::complex<float>;
+	
+	float bandFreqRatio = 0, octaveBands = 0;
+	float scoreStickiness = 0.5f;
+	float prevScoreBand = 0, prevScore = 0;
 
 	std::vector<PitchEvent> events;
 	signalsmith::linear::DynamicSTFT<float> stft;
@@ -183,7 +173,7 @@ private:
 	std::vector<size_t> inputIndex;
 	std::vector<float> inputIndexFrac;
 	std::vector<float> inputReal, inputImag;
-	std::vector<float> filterGain, filterTwistReal, filterTwistImag;
+	std::vector<float> filterGain, filterWeights, filterTwistReal, filterTwistImag;
 	std::vector<float> stateReal, stateImag;
 	std::vector<float> state2Real, state2Imag;
 	std::vector<float> bandEnergy;
@@ -227,18 +217,13 @@ private:
 			auto energy = linear(bandEnergy.data(), bands); // un-padded size
 			energy = state2.norm();
 		} else if (!step--) {
-			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt().sqrt();
-			for (size_t b = 0; b < bands; ++b) {
-				bandScore[b] *= (bands - b);
-			}
-			for (size_t b = bands; b < paddedBands; ++b) {
-				bandScore[b] = 0;
-			}
+			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt();
+			linear(bandScore.data(), bands) *= linear(filterWeights);
 
 			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
 			energyFft.ifft(bandScoreSpectrum.data(), bandScoreResult.data());
-		} else if (!step--) {
+		} else if (!step-- && std::abs(scoreWeightBelow) > 1e-5f) {
 			// Cumulative sum
 			float sum = 1e-30f;
 			for (size_t b = 0; b < bands; ++b) {
@@ -248,25 +233,58 @@ private:
 			for (size_t b = scoreKernelLeadIn; b < bands; ++b) {
 				bandScoreResult[b] += scoreWeightBelow*bandScoreCumulativeSum[b - scoreKernelLeadIn];
 			}
-			
- 			//for (auto &v : bandScore) v = std::max<float>(v, 0);
 		} else if (!step--) {
-			events.push_back({0, 0, blockOffset});
+			for (size_t b = 0; b < bands; ++b) {
+				float d = (b - prevScoreBand)/octaveBands;
+				bandScoreResult[b] += scoreStickiness*prevScore/(1 + d*d);
+			}
+		} else if (!step--) {
+			size_t bestB = 0;
+			float bestFracB = 0, bestScore = 0, nextBestScore = 1e-30f;
+			for (size_t b = 1; b + 1 < bands; ++b) {
+				auto curr = bandScoreResult[b];
+				if (curr > nextBestScore) {
+					auto prev = bandScoreResult[b - 1], next = bandScoreResult[b + 1];
+					if (curr >= prev && curr > next) {
+						// It's a peak - is it a new best one?
+						if (curr > bestScore) {
+							nextBestScore = bestScore;
+							bestScore = curr;
+							bestB = b;
+							bestFracB = 0.5f*(next - prev)/(2*curr - prev - next + 1e-30f);
+						} else {
+							nextBestScore = curr;
+						}
+					}
+				}
+			}
+			prevScore = bestScore;
+			prevScoreBand = bestB + bestFracB;
+			if (bestScore > 0) {
+				float hz = bandHz[bestB]*std::pow(bandFreqRatio, bestFracB);
+				float onEnergy = 1e-30f, allEnergy = 1e-30f;
+				for (size_t b = 0; b < bestB; ++b) {
+					float h = bandHz[b]/hz;
+					float e = bandEnergy[b];
+					allEnergy += e;
+					if (std::abs(h - std::round(h)) < 0.25f) {
+						onEnergy += e;
+					}
+				}
+				float tonality = onEnergy/allEnergy;
+				events.push_back({hz, tonality, blockOffset});
+			} else {
+				events.push_back({0, 0, blockOffset});
+			}
 		}
 	}
 	
-	static constexpr float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.5f;
+	static constexpr float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.25f;
 	static float scoreKernel(float harmonic) {
-//		float sum = 0;
-//		for (size_t i = 1; i < 10; ++i) {
-//			float d = (harmonic/i - 1)*10;
-//			sum += std::exp(-d*d)/i;
-//		}
-//		return sum;
-
 		auto ratio = harmonic/maxScoreHarmonic;
-//		return (1 + std::cos(float(2*M_PI)*harmonic))*std::sqrt(harmonic - minScoreHarmonic)*(1 - ratio);
-		return std::pow(0.5f + 0.5f*std::cos(float(2*M_PI)*harmonic), 4.0f/(harmonic + 1));
+		auto k = std::cos(float(2*M_PI)*harmonic);
+		if (harmonic < 1) k *= harmonic*harmonic*(3 - 2*harmonic);
+		return k*(1 - ratio*ratio);
 	}
 };
 

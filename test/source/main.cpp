@@ -25,6 +25,7 @@ int main(int argc, char *argv[]) {
 	SimpleArgs args{argc, argv};
 	
 	std::string inWavPath = args.arg("input.wav", "input WAV file");
+	double wavRate = args.flag<double>("rate", "change playback rate of input audio", 1);
 	std::string outCsvPath = args.arg("output.csv", "output CSV", "");
 	std::string svgPlotPath = args.flag("plot", "output SVG plot (optional)", "");
 	double svgPlotSpeed = args.flag("plot-speed", "plot animation rate (compared to realtime)", 0.1);
@@ -39,6 +40,7 @@ int main(int argc, char *argv[]) {
 	
 	Wav wav;
 	if (!wav.read(inWavPath).warn()) args.errorExit("failed to open WAV");
+	wav.sampleRate *= wavRate;
 	wav.makeMono();
 	std::vector<float> input;
 	input.resize(wav.samples.size());
@@ -71,7 +73,7 @@ int main(int argc, char *argv[]) {
 		energyPlot.x.major(0).minors(20, 100, 200, 500, 1000, 2000, 5000).range(hzToLogIsh, 20, 6000).label("Hz");
 		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-80, 0).label("dB");
 		auto &scoreY = energyPlot.newY().flip().tick(0).label("score");
-		auto &legend = energyPlot.legend(0, 1);
+		auto &legend = energyPlot.legend(2, 1);
 
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
@@ -89,6 +91,7 @@ int main(int argc, char *argv[]) {
 				while (std::getline(sstr, colStr, ',')) {
 					row.push_back(std::stod(colStr));
 				}
+				row[1] *= wavRate;
 				
 				if (row[1] == prevHz) continue;
 				prevHz = row[1];
@@ -99,7 +102,7 @@ int main(int argc, char *argv[]) {
 						refLine.add(row[1]*h, -200);
 					}
 				}
-				refLine.toFrame(row[0]/svgPlotSpeed);
+				refLine.toFrame(row[0]/svgPlotSpeed/wavRate);
 			}
 		}
 
@@ -109,6 +112,7 @@ int main(int argc, char *argv[]) {
 			tracker.configure(wav.sampleRate, blockSize, 0, overlap);
 			tracker.reset();
 			auto &hz = tracker.debugHz();
+			auto &resultLine = energyPlot.line(energyPlot.x, energyPlot.newY().linear(0, 1).blank(), 5);
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
@@ -142,11 +146,18 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				scoreLine.marker(hz[bestB], score[bestB]);
+				resultLine.marker(update.hz, update.tonality);
+				for (size_t h = 1; h <= 10; ++h) {
+					resultLine.cut();
+					resultLine.add(update.hz*h, 0);
+					resultLine.add(update.hz*h, update.tonality);
+				}
 
 				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
 				energyLine.toFrame(frameTime);
 				scoreRefLine.toFrame(frameTime);
 				scoreLine.toFrame(frameTime);
+				resultLine.toFrame(frameTime);
 
 				auto &scoreKernel = tracker.debugScoreKernel();
 				for (size_t b = 0; b < scoreRef.size(); ++b) {
@@ -158,7 +169,6 @@ int main(int argc, char *argv[]) {
 					scoreKernelLine.add(hz[offsetB], scoreKernel[b]);
 				}
 				scoreKernelLine.toFrame(frameTime);
-				
 			}
 		}
 
