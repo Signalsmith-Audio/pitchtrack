@@ -160,7 +160,7 @@ private:
 	using Complex = std::complex<float>;
 	
 	float bandFreqRatio = 0, octaveBands = 0;
-	float scoreStickiness = 0.5f;
+	float scoreStickiness = 0;//0.2f;
 	float prevScoreBand = 0, prevScore = 0;
 
 	std::vector<PitchEvent> events;
@@ -240,7 +240,7 @@ private:
 			}
 		} else if (!step--) {
 			size_t bestB = 0;
-			float bestFracB = 0, bestScore = 0, nextBestScore = 1e-30f;
+			float bestFracB = 0, bestScore = -1e30, nextBestScore = bestScore;
 			for (size_t b = 1; b + 1 < bands; ++b) {
 				auto curr = bandScoreResult[b];
 				if (curr > nextBestScore) {
@@ -265,7 +265,7 @@ private:
 				float onEnergy = 1e-30f, allEnergy = 1e-30f;
 				for (size_t b = 0; b < bestB; ++b) {
 					float h = bandHz[b]/hz;
-					float e = bandEnergy[b];
+					float e = bandEnergy[b]*filterWeights[b];
 					allEnergy += e;
 					if (std::abs(h - std::round(h)) < 0.25f) {
 						onEnergy += e;

@@ -25,13 +25,13 @@ int main(int argc, char *argv[]) {
 	SimpleArgs args{argc, argv};
 	
 	std::string inWavPath = args.arg("input.wav", "input WAV file");
-	double wavRate = args.flag<double>("rate", "change playback rate of input audio", 1);
 	std::string outCsvPath = args.arg("output.csv", "output CSV", "");
 	std::string svgPlotPath = args.flag("plot", "output SVG plot (optional)", "");
 	double svgPlotSpeed = args.flag("plot-speed", "plot animation rate (compared to realtime)", 0.1);
 	bool hasPlot = !svgPlotPath.empty();
 	std::string svgPlotRef = args.flag("plot-ref", "reference (seconds,hz) CSV", "");
 	double highpassHz = args.flag("highpass", "highpass (0=off)", 0);
+	double wavRate = args.flag<double>("rate", "change playback rate of input audio", 1);
 	args.errorExit();
 	
 	if (outCsvPath.empty()) outCsvPath = inWavPath + ".csv";
@@ -166,7 +166,8 @@ int main(int argc, char *argv[]) {
 						scoreKernelLine.cut();
 						continue;
 					}
-					scoreKernelLine.add(hz[offsetB], scoreKernel[b]);
+					float deltaHz = update.hz - hz[bestB];
+					scoreKernelLine.add(hz[offsetB] + deltaHz, scoreKernel[b]);
 				}
 				scoreKernelLine.toFrame(frameTime);
 			}
@@ -175,9 +176,9 @@ int main(int argc, char *argv[]) {
 		// synchronise loop times
 		figure.loopFrame(wav.length()/svgPlotSpeed/wav.sampleRate);
 
-		std::cout << "writing SVG...";
+		std::cout << "writing SVG..." << std::endl;
 		figure.write(svgPlotPath);
-		std::cout << " done\n";
+		std::cout << "\tdone\n";
 	}
 
 	for (auto &event : tracker.updates()) {
