@@ -69,15 +69,20 @@ int main(int argc, char *argv[]) {
 	if (hasPlot) { // Process again
 		signalsmith::plot::Figure figure;
 		figure.style.precision = 10; // the SVGs are huge, take the edge off a bit
-		auto &energyPlot = figure.plot(600, 200);
+		auto &energyPlot = figure(0, 0).plot(600, 200);
 		energyPlot.x.major(0).minors(20, 100, 200, 500, 1000, 2000, 5000).range(hzToLogIsh, 20, 6000).label("Hz");
 		energyPlot.y.major(0).minors(-20, -40, -60, -80).linear(-80, 0).label("dB");
 		auto &scoreY = energyPlot.newY().flip().tick(0).label("score");
 		auto &legend = energyPlot.legend(2, 1);
 
+		auto &notePlot = figure(0, 1).plot(600, 150);
+		notePlot.x.label("seconds");
+		notePlot.y.label("MIDI note");
+
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
 			auto &refLine = energyPlot.line(4);
+			auto &noteRefLine = notePlot.line(4);
 			legend.add(refLine, "reference");
 			
 			std::ifstream csv{svgPlotRef};
@@ -91,6 +96,7 @@ int main(int argc, char *argv[]) {
 				while (std::getline(sstr, colStr, ',')) {
 					row.push_back(std::stod(colStr));
 				}
+				row[0] /= wavRate;
 				row[1] *= wavRate;
 				
 				if (row[1] == prevHz) continue;
@@ -101,8 +107,11 @@ int main(int argc, char *argv[]) {
 						refLine.add(row[1]*h, 0);
 						refLine.add(row[1]*h, -200);
 					}
+					noteRefLine.add(row[0], 12*std::log2(row[1]));
+				} else {
+					noteRefLine.cut();
 				}
-				refLine.toFrame(row[0]/svgPlotSpeed/wavRate);
+				refLine.toFrame(row[0]/svgPlotSpeed);
 			}
 		}
 
@@ -113,6 +122,8 @@ int main(int argc, char *argv[]) {
 			tracker.reset();
 			auto &hz = tracker.debugHz();
 			auto &resultLine = energyPlot.line(energyPlot.x, energyPlot.newY().linear(0, 1).blank(), 5);
+			auto &noteLine = notePlot.line();
+			auto &tonalityLine = notePlot.line(notePlot.x, notePlot.newY().flip().linear(0, 1).minors(0, 1).label("tonality"));
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
@@ -125,7 +136,7 @@ int main(int argc, char *argv[]) {
 				if (tracker.updates().empty()) continue;
 
 				auto &update = tracker.updates()[0];
-				int sampleIndex = int(blockStart + update.offset) - tracker.latencySamples();
+				int sampleIndex = int(blockStart + update.offset);// - tracker.latencySamples();
 				if (sampleIndex < 0) continue; // it breaks for t < 0
 
 				auto &energy = tracker.debugEnergy();
@@ -153,6 +164,14 @@ int main(int argc, char *argv[]) {
 					resultLine.add(update.hz*h, update.tonality);
 				}
 
+				if (update.hz > 0) {
+					noteLine.add(sampleIndex/float(wav.sampleRate), 12*std::log2(update.hz));
+					tonalityLine.add(sampleIndex/float(wav.sampleRate), update.tonality);
+				} else {
+					noteLine.cut();
+					tonalityLine.cut();
+				}
+
 				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
 				energyLine.toFrame(frameTime);
 				scoreRefLine.toFrame(frameTime);
@@ -175,6 +194,15 @@ int main(int argc, char *argv[]) {
 
 		// synchronise loop times
 		figure.loopFrame(wav.length()/svgPlotSpeed/wav.sampleRate);
+		
+		notePlot.x.major(0);
+		for (size_t sec = 1; sec < wav.length()/wav.sampleRate; ++sec) {
+			if (sec%10) {
+				notePlot.x.tick(sec, "");
+			} else {
+				notePlot.x.tick(sec);
+			}
+		}
 
 		std::cout << "writing SVG..." << std::endl;
 		figure.write(svgPlotPath);

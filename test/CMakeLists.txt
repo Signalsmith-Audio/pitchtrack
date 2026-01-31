@@ -47,11 +47,17 @@ FetchContent_Declare(
 	GIT_SHALLOW ON
 )
 FetchContent_Declare(
+	signalsmith-dsp
+	GIT_REPOSITORY https://github.com/Signalsmith-Audio/dsp.git
+	GIT_TAG v1.7.0
+	GIT_SHALLOW ON
+)
+FetchContent_Declare(
 	vocadito-dataset
 	URL https://zenodo.org/records/5578807/files/vocadito.zip?download=1
 	SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/data/vocadito
 	DOWNLOAD_NO_PROGRESS NO
 )
-FetchContent_MakeAvailable(signalsmith-plot signalsmith-util vocadito-dataset)
+FetchContent_MakeAvailable(signalsmith-plot signalsmith-util signalsmith-dsp vocadito-dataset)
 
-target_link_libraries(analyse PUBLIC signalsmith-plot signalsmith-util)
+target_link_libraries(analyse PUBLIC signalsmith-plot signalsmith-util signalsmith-dsp)

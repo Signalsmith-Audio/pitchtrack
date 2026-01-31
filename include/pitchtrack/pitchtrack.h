@@ -2,7 +2,6 @@
 
 #include "signalsmith-linear/stft.h"
 #include "signalsmith-linear/linear.h"
-#include "signalsmith-dsp/curves.h"
 
 #include <vector>
 
@@ -93,15 +92,13 @@ struct PitchTrack {
 		
 		// Complex filter: y[n] = twist*y[n - 1] + gain*x[n];
 		float subRate = sampleRate/intervalSamples;
-		auto barkScale = signalsmith::curves::Reciprocal<float>::barkScale();
 		for (size_t b = 0; b < bands; ++b) {
-			float bark = barkScale.inverse(bandHz[b]);
-			float bandwidth = barkScale.dx(bark)*bandwidthFactor;
+			float bandwidth = bandHz[b]*(bandFreqRatio - 1);
 			auto logTwist = Complex{-bandwidth, bandHz[b]}*float(2*M_PI)/subRate;
 			float absTwist = std::exp(logTwist.real());
 			Complex twist = std::polar(absTwist, logTwist.imag());
 			filterGain[b] = (1 - absTwist); // 0dB peak
-			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight
+			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight (if we're not constant Q)
 			filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
 			filterTwistReal[b] = twist.real();
 			filterTwistImag[b] = twist.imag();
@@ -160,7 +157,7 @@ private:
 	using Complex = std::complex<float>;
 	
 	float bandFreqRatio = 0, octaveBands = 0;
-	float scoreStickiness = 0;//0.2f;
+	float scoreStickiness = 0.2f;
 	float prevScoreBand = 0, prevScore = 0;
 
 	std::vector<PitchEvent> events;
@@ -234,9 +231,11 @@ private:
 				bandScoreResult[b] += scoreWeightBelow*bandScoreCumulativeSum[b - scoreKernelLeadIn];
 			}
 		} else if (!step--) {
-			for (size_t b = 0; b < bands; ++b) {
-				float d = (b - prevScoreBand)/octaveBands;
-				bandScoreResult[b] += scoreStickiness*prevScore/(1 + d*d);
+			if (prevScore > 0) {
+				for (size_t b = 0; b < bands; ++b) {
+					float d = (b - prevScoreBand)/octaveBands;
+					bandScoreResult[b] += scoreStickiness*prevScore/(1 + d*d);
+				}
 			}
 		} else if (!step--) {
 			size_t bestB = 0;

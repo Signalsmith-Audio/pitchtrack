@@ -12,12 +12,6 @@ FetchContent_Declare(
 	GIT_TAG 0.3.0
 	GIT_SHALLOW ON
 )
-FetchContent_Declare(
-	signalsmith-dsp
-	GIT_REPOSITORY https://github.com/Signalsmith-Audio/dsp.git
-	GIT_TAG v1.7.0
-	GIT_SHALLOW ON
-)
-FetchContent_MakeAvailable(signalsmith-linear signalsmith-dsp)
+FetchContent_MakeAvailable(signalsmith-linear)
 
-target_link_libraries(signalsmith-pitch-tracker INTERFACE signalsmith-linear signalsmith-dsp)
+target_link_libraries(signalsmith-pitch-tracker INTERFACE signalsmith-linear)
