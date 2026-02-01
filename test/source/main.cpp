@@ -77,7 +77,7 @@ int main(int argc, char *argv[]) {
 
 		auto &notePlot = figure(0, 1).plot(600, 150);
 		notePlot.x.label("seconds");
-		notePlot.y.majors(0, 60, 120).minors(12, 24, 36, 48, 72, 84, 96, 108).label("MIDI note");
+		notePlot.y.major(60).minors(24, 36, 48, 72, 84, 96, 108).label("MIDI note");
 		auto &noteLegend = notePlot.legend(2, 1);
 
 		LOG_EXPR(svgPlotRef);
@@ -135,7 +135,7 @@ int main(int argc, char *argv[]) {
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreKernelLine = energyPlot.fill(energyPlot.x, energyPlot.newY().blank()).fillToY(0);
-			legend.add(energyLine, "energy").add(scoreLine, "score (result)").add(scoreRefLine, "score (raw)").add(scoreKernelLine, "score kernel");
+			legend.add(energyLine, "energy").add(scoreLine, "score (result)").add(scoreRefLine, "score (raw)").fill(scoreKernelLine, "score kernel");
 			noteLegend.add(noteLine, "note estimate").add(tonalityLine, "tonality").add(noteTimeLine, "time");
 			
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {

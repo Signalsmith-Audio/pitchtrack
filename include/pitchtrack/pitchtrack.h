@@ -30,11 +30,12 @@ struct PitchTrack {
 		inputReal.resize(bands);
 		inputImag.resize(bands);
 		filterGain.resize(bands);
-		filterWeights.resize(bands);
-		filterTwistReal.resize(bands);
-		filterTwistImag.resize(bands);
-		stateReal.resize(bands);
-		stateImag.resize(bands);
+		filterTwist1Real.resize(bands);
+		filterTwist1Imag.resize(bands);
+		filterTwist2Real.resize(bands);
+		filterTwist2Imag.resize(bands);
+		state1Real.resize(bands);
+		state1Imag.resize(bands);
 		state2Real.resize(bands);
 		state2Imag.resize(bands);
 		prevBandEnergy.resize(bands);
@@ -99,17 +100,19 @@ struct PitchTrack {
 		// Complex filter: y[n] = twist*y[n - 1] + gain*x[n];
 		float subRate = sampleRate/intervalSamples;
 		for (size_t b = 0; b < bands; ++b) {
-			float bandwidth = bandHz[b]*bandwidthFactor*std::sqrt(2.0f);
-			auto logTwist = Complex{-bandwidth, bandHz[b]}*float(2*M_PI)/subRate;
-			float absTwist = std::exp(logTwist.real());
-			Complex twist = std::polar(absTwist, logTwist.imag());
+			float bandwidth = bandHz[b]*bandwidthFactor*std::sqrt(0.5f);
+			auto logTwist1 = Complex{-bandwidth, bandHz[b] - bandwidth}*float(2*M_PI)/subRate;
+			auto logTwist2 = Complex{-bandwidth, bandHz[b] + bandwidth}*float(2*M_PI)/subRate;
+			float absTwist = std::exp(logTwist1.real());
 			filterGain[b] = (1 - absTwist); // 0dB peak
 			bandEnergyDecay[b] = absTwist*absTwist;
-//			filterWeights[b] = std::pow(bandwidth, 2);
-			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight (if we're not constant Q)
-			//filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
-			filterTwistReal[b] = twist.real();
-			filterTwistImag[b] = twist.imag();
+
+			Complex twist1 = std::polar(absTwist, logTwist1.imag());
+			Complex twist2 = std::polar(absTwist, logTwist2.imag());
+			filterTwist1Real[b] = twist1.real();
+			filterTwist1Imag[b] = twist1.imag();
+			filterTwist2Real[b] = twist2.real();
+			filterTwist2Imag[b] = twist2.imag();
 		}
 		
 		events.reserve(maxBlockSize/intervalSamples + 1);
@@ -136,7 +139,7 @@ struct PitchTrack {
 		
 		// Resonator state
 		stft.reset();
-		linear(stateReal, stateImag) = 0;
+		linear(state1Real, state1Imag) = 0;
 		linear(state2Real, state2Imag) = 0;
 		linear(bandEnergy) = 0;
 		linear(prevBandEnergy) = 0;
@@ -196,8 +199,8 @@ private:
 	std::vector<size_t> inputIndex;
 	std::vector<float> inputIndexFrac;
 	std::vector<float> inputReal, inputImag;
-	std::vector<float> filterGain, filterWeights, filterTwistReal, filterTwistImag;
-	std::vector<float> stateReal, stateImag;
+	std::vector<float> filterGain, filterTwist1Real, filterTwist1Imag, filterTwist2Real, filterTwist2Imag;
+	std::vector<float> state1Real, state1Imag;
 	std::vector<float> state2Real, state2Imag;
 	std::vector<float> bandEnergy, prevBandEnergy, bandEnergyDecay;
 
@@ -230,11 +233,12 @@ private:
 		} else if (!step--) {
 			auto input = linear(inputReal, inputImag);
 			auto gain = linear(filterGain);
-			auto twist = linear(filterTwistReal, filterTwistImag);
-			auto state = linear(stateReal, stateImag);
+			auto twist1 = linear(filterTwist1Real, filterTwist1Imag);
+			auto twist2 = linear(filterTwist2Real, filterTwist2Imag);
+			auto state = linear(state1Real, state1Imag);
 			auto state2 = linear(state2Real, state2Imag);
-			state = state*twist + input*gain;
-			state2 = state2*twist + state*gain;
+			state = state*twist1 + input*gain;
+			state2 = state2*twist2 + state*gain;
 			
 			auto energy = linear(bandEnergy.data(), bands); // un-padded size
 			energy = state2.norm();
@@ -242,7 +246,6 @@ private:
 			linear(prevBandEnergy) = energy*linear(bandEnergyDecay);
 		} else if (!step--) {
 			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt();
-			linear(bandScore.data(), bands) *= linear(filterWeights);
 
 			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
@@ -305,10 +308,12 @@ private:
 				float onEnergy = 1e-30f, allEnergy = 1e-30f;
 				for (size_t b = 0; b < bands; ++b) {
 					float h = bandHz[b]/hz;
-					if (h > 10.5) break;
-					float e = bandEnergy[b]*filterWeights[b];
+					float e = bandEnergy[b];
 					allEnergy += e;
-					onEnergy += e*0.5f*(1 + std::cos(h*float(2*M_PI)));
+					if (h > 10.5f) continue;
+					if (h > 0.5f && std::abs(h - std::round(h)) < 0.25f) {
+						onEnergy += e;
+					}
 				}
 				float tonality = onEnergy/allEnergy;
 				if (tonality > thresholdTonalityOn) {
@@ -335,10 +340,15 @@ private:
 	static constexpr float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.25f;
 	float scoreWeightBelow = -0.01f, scoreWeightAbove = 0;
 	static float scoreKernel(float harmonic) {
-		auto ratio = harmonic/maxScoreHarmonic;
+		float ratio = harmonic/maxScoreHarmonic;
 		auto k = std::cos(float(2*M_PI)*harmonic);
+		auto k2 = std::cos(float(4*M_PI)*harmonic);
 		if (harmonic < 1) k *= harmonic*harmonic*(3 - 2*harmonic);
-		return k*(1 - ratio*ratio*ratio);
+		if (harmonic < 0.875) k2 = 0;
+		float w = (1 - std::pow(ratio, 3.0f));
+		k *= (1 - std::pow(ratio, 3.0f));
+		float r = std::max<float>(0, 1 - ratio*2)*0.3f;
+		return (k + (k2 - k)*r)*w;
 	}
 };
 
