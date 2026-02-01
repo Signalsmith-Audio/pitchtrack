@@ -77,10 +77,11 @@ int main(int argc, char *argv[]) {
 
 		auto &notePlot = figure(0, 1).plot(600, 150);
 		notePlot.x.label("seconds");
-		notePlot.y.label("MIDI note");
+		notePlot.y.majors(0, 60, 120).minors(12, 24, 36, 48, 72, 84, 96, 108).label("MIDI note");
 		auto &noteLegend = notePlot.legend(2, 1);
 
 		LOG_EXPR(svgPlotRef);
+		static constexpr float note0Hz = 8.175798915643707;
 		if (!svgPlotRef.empty()) {
 			auto &refLine = energyPlot.line(4);
 			auto &noteRefLine = notePlot.line(4);
@@ -109,7 +110,7 @@ int main(int argc, char *argv[]) {
 						refLine.add(row[1]*h, 0);
 						refLine.add(row[1]*h, -200);
 					}
-					noteRefLine.add(row[0], 12*std::log2(row[1]));
+					noteRefLine.add(row[0], 12*std::log2(row[1]/note0Hz));
 				} else {
 					noteRefLine.cut();
 				}
@@ -128,6 +129,7 @@ int main(int argc, char *argv[]) {
 			auto &noteMarkerLine = notePlot.line(noteLine.styleIndex);
 			auto &tonalityY = notePlot.newY().flip().linear(0, 1).minors(0, 1).label("tonality");
 			auto &tonalityLine = notePlot.line(notePlot.x, tonalityY);
+			auto &tonalityMarkerLine = notePlot.line(notePlot.x, tonalityY, tonalityLine.styleIndex);
 			auto &noteTimeLine = notePlot.line(notePlot.x, tonalityY);
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
@@ -173,26 +175,30 @@ int main(int argc, char *argv[]) {
 					resultLine.add(update.hz*h, update.tonality);
 				}
 
+				float midiNote = 12*std::log2(update.hz/note0Hz);
+				float seconds = sampleIndex/float(wav.sampleRate);
 				if (update.hz > 0 && (plotUnvoiced || update.voiced)) {
-					noteLine.add(sampleIndex/float(wav.sampleRate), 12*std::log2(update.hz));
+					noteLine.add(seconds, midiNote);
+					tonalityLine.add(seconds, update.tonality);
 					if (update.voiced) {
-						noteMarkerLine.marker(sampleIndex/float(wav.sampleRate), 12*std::log2(update.hz));
+						noteMarkerLine.marker(seconds, midiNote);
+						tonalityMarkerLine.marker(seconds, update.tonality);
 					}
-					tonalityLine.add(sampleIndex/float(wav.sampleRate), update.tonality);
 				} else {
 					noteLine.cut();
 					tonalityLine.cut();
 				}
-				noteTimeLine.add(sampleIndex/float(wav.sampleRate), 0);
-				noteTimeLine.add(sampleIndex/float(wav.sampleRate), 1);
+				noteTimeLine.add(seconds, 0);
+				noteTimeLine.add(seconds, 1);
 
-				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
+				auto frameTime = seconds/svgPlotSpeed;
 				energyLine.toFrame(frameTime);
 				scoreRefLine.toFrame(frameTime);
 				scoreLine.toFrame(frameTime);
 				resultLine.toFrame(frameTime);
 				noteTimeLine.toFrame(frameTime);
 				noteMarkerLine.toFrame(frameTime);
+				tonalityMarkerLine.toFrame(frameTime);
 
 				auto &scoreKernel = tracker.debugScoreKernel();
 				for (size_t b = 0; b < scoreRef.size(); ++b) {

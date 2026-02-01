@@ -15,10 +15,10 @@ struct PitchEvent {
 
 struct PitchTrack {
 	const float minHz, maxHz, bandwidthFactor;
-	PitchTrack(float minHz=20, float maxHz=6000, float bandwidthFactor=0.25f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthFactor) {
+	PitchTrack(float minHz=20, float maxHz=6000, float bandwidthSemitones=0.6f) : minHz(minHz), maxHz(maxHz), bandwidthFactor(bandwidthSemitones*std::log(2)/12) {
 		float hz = minHz;
-		bandFreqRatio = 1 + 0.15f*bandwidthFactor;
-		octaveBands = std::log(2.0f)/std::log(bandFreqRatio);
+		bandFreqRatio = std::exp(bandwidthFactor);
+		octaveBands = 12/bandwidthSemitones;
 		while (hz <= maxHz) {
 			bandHz.push_back(hz);
 			hz *= bandFreqRatio;
@@ -37,9 +37,11 @@ struct PitchTrack {
 		stateImag.resize(bands);
 		state2Real.resize(bands);
 		state2Imag.resize(bands);
+		prevBandEnergy.resize(bands);
+		bandEnergyDecay.resize(bands);
 
-		scoreKernelLength = std::log(maxScoreHarmonic/minScoreHarmonic)/std::log(bandFreqRatio);
-		scoreKernelLeadIn = std::log(1/minScoreHarmonic)/std::log(bandFreqRatio);
+		scoreKernelLength = std::log(maxScoreHarmonic/minScoreHarmonic)/bandwidthFactor;
+		scoreKernelLeadIn = std::log(1/minScoreHarmonic)/bandwidthFactor;
 		scoreKernelLeadOut = scoreKernelLength - scoreKernelLeadIn;
 		
 		paddedBands = energyFft.fastSizeAbove(bands + scoreKernelLength);
@@ -97,11 +99,12 @@ struct PitchTrack {
 		// Complex filter: y[n] = twist*y[n - 1] + gain*x[n];
 		float subRate = sampleRate/intervalSamples;
 		for (size_t b = 0; b < bands; ++b) {
-			float bandwidth = bandHz[b]*(bandFreqRatio - 1);
+			float bandwidth = bandHz[b]*bandwidthFactor*std::sqrt(2.0f);
 			auto logTwist = Complex{-bandwidth, bandHz[b]}*float(2*M_PI)/subRate;
 			float absTwist = std::exp(logTwist.real());
 			Complex twist = std::polar(absTwist, logTwist.imag());
 			filterGain[b] = (1 - absTwist); // 0dB peak
+			bandEnergyDecay[b] = absTwist*absTwist;
 //			filterWeights[b] = std::pow(bandwidth, 2);
 			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight (if we're not constant Q)
 			//filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
@@ -136,6 +139,7 @@ struct PitchTrack {
 		linear(stateReal, stateImag) = 0;
 		linear(state2Real, state2Imag) = 0;
 		linear(bandEnergy) = 0;
+		linear(prevBandEnergy) = 0;
 		linear(bandScore) = 0;
 
 		// Tracking state
@@ -195,7 +199,7 @@ private:
 	std::vector<float> filterGain, filterWeights, filterTwistReal, filterTwistImag;
 	std::vector<float> stateReal, stateImag;
 	std::vector<float> state2Real, state2Imag;
-	std::vector<float> bandEnergy;
+	std::vector<float> bandEnergy, prevBandEnergy, bandEnergyDecay;
 
 	size_t scoreKernelLength, scoreKernelLeadIn, scoreKernelLeadOut;
 	std::vector<float> bandScoreKernel;
@@ -234,6 +238,8 @@ private:
 			
 			auto energy = linear(bandEnergy.data(), bands); // un-padded size
 			energy = state2.norm();
+			energy = linear.max(energy, linear(prevBandEnergy));
+			linear(prevBandEnergy) = energy*linear(bandEnergyDecay);
 		} else if (!step--) {
 			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt();
 			linear(bandScore.data(), bands) *= linear(filterWeights);
