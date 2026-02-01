@@ -78,12 +78,14 @@ int main(int argc, char *argv[]) {
 		auto &notePlot = figure(0, 1).plot(600, 150);
 		notePlot.x.label("seconds");
 		notePlot.y.label("MIDI note");
+		auto &noteLegend = notePlot.legend(2, 1);
 
 		LOG_EXPR(svgPlotRef);
 		if (!svgPlotRef.empty()) {
 			auto &refLine = energyPlot.line(4);
 			auto &noteRefLine = notePlot.line(4);
 			legend.add(refLine, "reference");
+			noteLegend.add(noteRefLine, "reference");
 			
 			std::ifstream csv{svgPlotRef};
 			if (!csv) args.errorExit("Failed to open CSV");
@@ -123,12 +125,16 @@ int main(int argc, char *argv[]) {
 			auto &hz = tracker.debugHz();
 			auto &resultLine = energyPlot.line(energyPlot.x, energyPlot.newY().linear(0, 1).blank(), 5);
 			auto &noteLine = notePlot.line();
-			auto &tonalityLine = notePlot.line(notePlot.x, notePlot.newY().flip().linear(0, 1).minors(0, 1).label("tonality"));
+			auto &noteMarkerLine = notePlot.line(noteLine.styleIndex);
+			auto &tonalityY = notePlot.newY().flip().linear(0, 1).minors(0, 1).label("tonality");
+			auto &tonalityLine = notePlot.line(notePlot.x, tonalityY);
+			auto &noteTimeLine = notePlot.line(notePlot.x, tonalityY);
 			auto &energyLine = energyPlot.line();
 			auto &scoreLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreRefLine = energyPlot.line(energyPlot.x, scoreY);
 			auto &scoreKernelLine = energyPlot.fill(energyPlot.x, energyPlot.newY().blank()).fillToY(0);
 			legend.add(energyLine, "energy").add(scoreLine, "score (result)").add(scoreRefLine, "score (raw)").add(scoreKernelLine, "score kernel");
+			noteLegend.add(noteLine, "note estimate").add(tonalityLine, "tonality").add(noteTimeLine, "time");
 			
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {
 				size_t actualBlockSize = std::min<size_t>(blockSize, input.size() - blockStart);
@@ -138,6 +144,7 @@ int main(int argc, char *argv[]) {
 				auto &update = tracker.updates()[0];
 				int sampleIndex = int(blockStart + update.offset);// - tracker.latencySamples();
 				if (sampleIndex < 0) continue; // it breaks for t < 0
+				bool plotUnvoiced = true;
 
 				auto &energy = tracker.debugEnergy();
 				auto &scoreRef = tracker.debugScoreRef();
@@ -157,26 +164,35 @@ int main(int argc, char *argv[]) {
 					}
 				}
 				scoreLine.marker(hz[bestB], score[bestB]);
-				resultLine.marker(update.hz, update.tonality);
+				if (update.voiced) {
+					resultLine.marker(update.hz, update.tonality);
+				}
 				for (size_t h = 1; h <= 10; ++h) {
 					resultLine.cut();
 					resultLine.add(update.hz*h, 0);
 					resultLine.add(update.hz*h, update.tonality);
 				}
 
-				if (update.hz > 0) {
+				if (update.hz > 0 && (plotUnvoiced || update.voiced)) {
 					noteLine.add(sampleIndex/float(wav.sampleRate), 12*std::log2(update.hz));
+					if (update.voiced) {
+						noteMarkerLine.marker(sampleIndex/float(wav.sampleRate), 12*std::log2(update.hz));
+					}
 					tonalityLine.add(sampleIndex/float(wav.sampleRate), update.tonality);
 				} else {
 					noteLine.cut();
 					tonalityLine.cut();
 				}
+				noteTimeLine.add(sampleIndex/float(wav.sampleRate), 0);
+				noteTimeLine.add(sampleIndex/float(wav.sampleRate), 1);
 
 				auto frameTime = sampleIndex/svgPlotSpeed/wav.sampleRate;
 				energyLine.toFrame(frameTime);
 				scoreRefLine.toFrame(frameTime);
 				scoreLine.toFrame(frameTime);
 				resultLine.toFrame(frameTime);
+				noteTimeLine.toFrame(frameTime);
+				noteMarkerLine.toFrame(frameTime);
 
 				auto &scoreKernel = tracker.debugScoreKernel();
 				for (size_t b = 0; b < scoreRef.size(); ++b) {

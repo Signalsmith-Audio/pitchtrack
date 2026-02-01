@@ -10,6 +10,7 @@ namespace signalsmith { namespace pitchtrack {
 struct PitchEvent {
 	float hz, tonality;
 	size_t offset;
+	bool voiced;
 };
 
 struct PitchTrack {
@@ -39,6 +40,7 @@ struct PitchTrack {
 
 		scoreKernelLength = std::log(maxScoreHarmonic/minScoreHarmonic)/std::log(bandFreqRatio);
 		scoreKernelLeadIn = std::log(1/minScoreHarmonic)/std::log(bandFreqRatio);
+		scoreKernelLeadOut = scoreKernelLength - scoreKernelLeadIn;
 		
 		paddedBands = energyFft.fastSizeAbove(bands + scoreKernelLength);
 		energyFft.resize(paddedBands);
@@ -60,22 +62,24 @@ struct PitchTrack {
 				bandScoreKernel[b] = scoreKernel(ratio);
 			}
 		}
-		scoreWeightBelow = scoreKernel(minScoreHarmonic);
 
 		// normalise kernel to ~1 total energy
 		float kernelSum2 = 0;
 		for (auto &k : bandScoreKernel) kernelSum2 += k*k;
 		linear(bandScoreKernel) /= std::sqrt(kernelSum2);
 		scoreWeightBelow /= std::sqrt(kernelSum2);
+		scoreWeightAbove /= std::sqrt(kernelSum2);
 
 		// and store in the frequency domain
 		energyFft.fft(bandScoreKernel.data(), bandScoreKernelSpectrum.data());
 		bandScoreKernelSpectrum[0].imag(0);
 		linear(bandScoreKernelSpectrum) /= float(paddedBands);
 		linear(bandScoreKernelSpectrum) = linear(bandScoreKernelSpectrum).conj();
+		
+		setTracking();
 	}
 	
-	void configure(float sampleRate, size_t maxBlockSize=0, size_t latencySamples=0, float overlap=4) {
+	void configure(float sampleRate, size_t maxBlockSize=0, size_t latencySamples=0, float overlap=2.5) {
 		if (!latencySamples) latencySamples = size_t(sampleRate*0.002);
 		
 		size_t intervalSamples = latencySamples/overlap;
@@ -98,14 +102,22 @@ struct PitchTrack {
 			float absTwist = std::exp(logTwist.real());
 			Complex twist = std::polar(absTwist, logTwist.imag());
 			filterGain[b] = (1 - absTwist); // 0dB peak
+//			filterWeights[b] = std::pow(bandwidth, 2);
 			filterWeights[b] = bandHz[b]/bandwidth; // reduce overlapping weight (if we're not constant Q)
-			filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
+			//filterWeights[b] *= 1 - std::pow(b/float(bands), 2.0f); // taper high end
 			filterTwistReal[b] = twist.real();
 			filterTwistImag[b] = twist.imag();
 		}
 		
 		events.reserve(maxBlockSize/intervalSamples + 1);
 		reset();
+	}
+
+	void setTracking(float tonalityOn=0.8f, float tonalityOff=0.5f, float stickiness=0.5f, float jumpRatio=0.1f) {
+		thresholdTonalityOn = tonalityOn;
+		thresholdTonalityOff = tonalityOff;
+		scoreStickiness = stickiness;
+		thresholdJumpRatio = jumpRatio;
 	}
 
 	size_t latencySamples() const {
@@ -118,11 +130,19 @@ struct PitchTrack {
 	
 	void reset() {
 		events.resize(0);
+		
+		// Resonator state
 		stft.reset();
 		linear(stateReal, stateImag) = 0;
 		linear(state2Real, state2Imag) = 0;
 		linear(bandEnergy) = 0;
 		linear(bandScore) = 0;
+
+		// Tracking state
+		prevScoreBand = 0;
+		prevScore = 0;
+		prevHz = -1;
+		voiced = 0;
 	}
 	
 	void block(const float *buffer, size_t length) {
@@ -155,10 +175,12 @@ struct PitchTrack {
 	
 private:
 	using Complex = std::complex<float>;
-	
+
+	float thresholdTonalityOn = 0, thresholdTonalityOff = 0, scoreStickiness = 0, thresholdJumpRatio = 0;
+
 	float bandFreqRatio = 0, octaveBands = 0;
-	float scoreStickiness = 0.2f;
-	float prevScoreBand = 0, prevScore = 0;
+	float prevScoreBand = 0, prevScore = 0, prevHz = -1;
+	bool voiced = false;
 
 	std::vector<PitchEvent> events;
 	signalsmith::linear::DynamicSTFT<float> stft;
@@ -175,8 +197,7 @@ private:
 	std::vector<float> state2Real, state2Imag;
 	std::vector<float> bandEnergy;
 
-	float scoreWeightBelow = 0;
-	size_t scoreKernelLength, scoreKernelLeadIn;
+	size_t scoreKernelLength, scoreKernelLeadIn, scoreKernelLeadOut;
 	std::vector<float> bandScoreKernel;
 	std::vector<Complex> bandScoreKernelSpectrum;
 	std::vector<Complex> bandScoreSpectrum;
@@ -220,25 +241,36 @@ private:
 			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
 			energyFft.ifft(bandScoreSpectrum.data(), bandScoreResult.data());
-		} else if (!step-- && std::abs(scoreWeightBelow) > 1e-5f) {
-			// Cumulative sum
-			float sum = 1e-30f;
-			for (size_t b = 0; b < bands; ++b) {
-				sum += bandScore[b];
-				bandScoreCumulativeSum[b] = sum;
-			}
-			for (size_t b = scoreKernelLeadIn; b < bands; ++b) {
-				bandScoreResult[b] += scoreWeightBelow*bandScoreCumulativeSum[b - scoreKernelLeadIn];
+		} else if (!step--) {
+			if (scoreWeightBelow != 0 || scoreWeightAbove != 0) {
+				// Cumulative sum
+				float sum = 1e-30f;
+				for (size_t b = 0; b < bands; ++b) {
+					sum += bandScore[b];
+					bandScoreCumulativeSum[b] = sum;
+				}
+				if (scoreWeightBelow != 0) {
+					for (size_t b = scoreKernelLeadIn; b < bands; ++b) {
+						bandScoreResult[b] += scoreWeightBelow*bandScoreCumulativeSum[b - scoreKernelLeadIn];
+					}
+				}
+				if (scoreWeightAbove != 0) {
+					auto endScore = bandScoreCumulativeSum[bands - 1];
+					for (size_t b = 0; b + scoreKernelLeadOut < bands; ++b) {
+						auto remainingScore = endScore - bandScoreCumulativeSum[b + scoreKernelLeadOut];
+						bandScoreResult[b] += scoreWeightAbove*remainingScore;
+					}
+				}
 			}
 		} else if (!step--) {
-			if (prevScore > 0) {
+			if (voiced && prevScore > 0) {
 				for (size_t b = 0; b < bands; ++b) {
 					float d = (b - prevScoreBand)/octaveBands;
 					bandScoreResult[b] += scoreStickiness*prevScore/(1 + d*d);
 				}
 			}
 		} else if (!step--) {
-			size_t bestB = 0;
+			size_t bestB = 0, metricBLimit = 0;
 			float bestFracB = 0, bestScore = -1e30, nextBestScore = bestScore;
 			for (size_t b = 1; b + 1 < bands; ++b) {
 				auto curr = bandScoreResult[b];
@@ -259,31 +291,48 @@ private:
 			}
 			prevScore = bestScore;
 			prevScoreBand = bestB + bestFracB;
-			if (bestScore > 0) {
+		} else if (!step--) {
+			if (prevScore > 0) {
+				size_t bestB = std::floor(prevScoreBand);
+				float bestFracB = prevScoreBand - bestB;
 				float hz = bandHz[bestB]*std::pow(bandFreqRatio, bestFracB);
 				float onEnergy = 1e-30f, allEnergy = 1e-30f;
-				for (size_t b = 0; b < bestB; ++b) {
+				for (size_t b = 0; b < bands; ++b) {
 					float h = bandHz[b]/hz;
+					if (h > 10.5) break;
 					float e = bandEnergy[b]*filterWeights[b];
 					allEnergy += e;
-					if (std::abs(h - std::round(h)) < 0.25f) {
-						onEnergy += e;
-					}
+					onEnergy += e*0.5f*(1 + std::cos(h*float(2*M_PI)));
 				}
 				float tonality = onEnergy/allEnergy;
-				events.push_back({hz, tonality, blockOffset});
+				if (tonality > thresholdTonalityOn) {
+					voiced = true;
+				} else if (tonality < thresholdTonalityOff) {
+					voiced = false;
+				} else {
+					auto jump = std::abs(hz/prevHz - 1);
+					if (jump > thresholdJumpRatio) {
+						// The tonality is in the middle ground, but we jumped frequency too suddenly
+						voiced = false;
+					}
+				}
+				prevHz = hz;
+				events.push_back({hz, tonality, blockOffset, voiced});
 			} else {
-				events.push_back({0, 0, blockOffset});
+				voiced = false;
+				prevHz = -1;
+				events.push_back({0, 0, blockOffset, false});
 			}
 		}
 	}
 	
 	static constexpr float maxScoreHarmonic = 10.25f, minScoreHarmonic = 0.25f;
+	float scoreWeightBelow = -0.01f, scoreWeightAbove = 0;
 	static float scoreKernel(float harmonic) {
 		auto ratio = harmonic/maxScoreHarmonic;
 		auto k = std::cos(float(2*M_PI)*harmonic);
 		if (harmonic < 1) k *= harmonic*harmonic*(3 - 2*harmonic);
-		return k*(1 - ratio*ratio);
+		return k*(1 - ratio*ratio*ratio);
 	}
 };
 
