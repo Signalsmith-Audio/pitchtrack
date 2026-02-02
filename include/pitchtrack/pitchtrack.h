@@ -119,7 +119,7 @@ struct PitchTrack {
 		reset();
 	}
 
-	void setTracking(float tonalityOn=0.8f, float tonalityOff=0.5f, float stickiness=0.5f, float jumpRatio=0.1f) {
+	void setTracking(float tonalityOn=0.7f, float tonalityOff=0.5f, float stickiness=0.5f, float jumpRatio=0.1f) {
 		thresholdTonalityOn = tonalityOn;
 		thresholdTonalityOff = tonalityOff;
 		scoreStickiness = stickiness;
@@ -245,7 +245,10 @@ private:
 			energy = linear.max(energy, linear(prevBandEnergy));
 			linear(prevBandEnergy) = energy*linear(bandEnergyDecay);
 		} else if (!step--) {
-			linear(bandScore) = linear(bandEnergy).sqrt().sqrt().sqrt();
+			auto score = linear(bandScore.data(), bands);
+			score = linear(bandEnergy).sqrt();
+			score = score.sqrt();
+			score = score.sqrt();
 
 			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
@@ -308,12 +311,13 @@ private:
 				float onEnergy = 1e-30f, allEnergy = 1e-30f;
 				for (size_t b = 0; b < bands; ++b) {
 					float h = bandHz[b]/hz;
-					float e = bandEnergy[b];
+					if (h >= maxScoreHarmonic) break;
+					float r = 1 - h/maxScoreHarmonic;
+					float e = bandEnergy[b]*r;
 					allEnergy += e;
-					if (h > 10.5f) continue;
-					if (h > 0.5f && std::abs(h - std::round(h)) < 0.25f) {
-						onEnergy += e;
-					}
+					if (h < 0.5f) continue;
+					float d = std::abs(h - std::round(h))*4;
+					if (d < 1) onEnergy += e*(1 - d*d);
 				}
 				float tonality = onEnergy/allEnergy;
 				if (tonality > thresholdTonalityOn) {
@@ -343,12 +347,13 @@ private:
 		float ratio = harmonic/maxScoreHarmonic;
 		auto k = std::cos(float(2*M_PI)*harmonic);
 		auto k2 = std::cos(float(4*M_PI)*harmonic);
-		if (harmonic < 1) k *= harmonic*harmonic*(3 - 2*harmonic);
+		if (harmonic < 1) k *= harmonic*(2 - harmonic);
 		if (harmonic < 0.875) k2 = 0;
-		float w = (1 - std::pow(ratio, 3.0f));
 		k *= (1 - std::pow(ratio, 3.0f));
 		float r = std::max<float>(0, 1 - ratio*2)*0.3f;
-		return (k + (k2 - k)*r)*w;
+		k += (k2 - k)*r;
+		float w = (1 - std::pow(ratio, 3.0f));
+		return k*w;
 	}
 };
 

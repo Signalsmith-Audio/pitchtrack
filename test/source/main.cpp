@@ -30,6 +30,7 @@ int main(int argc, char *argv[]) {
 	double svgPlotSpeed = args.flag("plot-speed", "plot animation rate (compared to realtime)", 0.1);
 	bool hasPlot = !svgPlotPath.empty();
 	std::string svgPlotRef = args.flag("plot-ref", "reference (seconds,hz) CSV", "");
+	bool plotUnvoiced = args.hasFlag("plot-unvoiced", "whether to include unvoiced frequency results");
 	double highpassHz = args.flag("highpass", "highpass (0=off)", 0);
 	double wavRate = args.flag<double>("rate", "change playback rate of input audio", 1);
 	args.errorExit();
@@ -85,6 +86,7 @@ int main(int argc, char *argv[]) {
 		if (!svgPlotRef.empty()) {
 			auto &refLine = energyPlot.line(4);
 			auto &noteRefLine = notePlot.line(4);
+			auto &noteMarkerLine = notePlot.line(4);
 			legend.add(refLine, "reference");
 			noteLegend.add(noteRefLine, "reference");
 			
@@ -111,10 +113,12 @@ int main(int argc, char *argv[]) {
 						refLine.add(row[1]*h, -200);
 					}
 					noteRefLine.add(row[0], 12*std::log2(row[1]/note0Hz));
+					noteMarkerLine.marker(row[0], 12*std::log2(row[1]/note0Hz));
 				} else {
 					noteRefLine.cut();
 				}
 				refLine.toFrame(row[0]/svgPlotSpeed);
+				noteMarkerLine.toFrame(row[0]/svgPlotSpeed);
 			}
 		}
 
@@ -146,7 +150,6 @@ int main(int argc, char *argv[]) {
 				auto &update = tracker.updates()[0];
 				int sampleIndex = int(blockStart + update.offset);// - tracker.latencySamples();
 				if (sampleIndex < 0) continue; // it breaks for t < 0
-				bool plotUnvoiced = true;
 
 				auto &energy = tracker.debugEnergy();
 				auto &scoreRef = tracker.debugScoreRef();
