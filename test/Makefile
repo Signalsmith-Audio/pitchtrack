@@ -9,7 +9,7 @@ out/build: CMakeLists.txt ../CMakeLists.txt
 	mkdir -p out
 	cmake -B out/build -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=.. -DCMAKE_BUILD_TYPE=Release
 
-out/analyse: out/build source/main.cpp ../include/pitchtrack/pitchtrack.h
+out/analyse: out/build source/main.cpp ../include/signalsmith-pitchtrack/pitchtrack.h
 	cmake --build out/build --config Release
 
 dev: out/analyse

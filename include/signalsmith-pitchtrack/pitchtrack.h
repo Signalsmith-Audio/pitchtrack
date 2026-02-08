@@ -8,12 +8,12 @@
 namespace signalsmith { namespace pitchtrack {
 
 struct PitchEvent {
-	float hz = 1, energy = 0, tonality = 0, tonalityNorm = 0;
+	float hz = 1, energy = 0, tonalityRaw = 0, tonality = 0;
 	size_t offset = 0;
 	bool voiced = false;
 	
 	PitchEvent() {}
-	PitchEvent(float hz, float energy, float tonality, float tonalityNorm, size_t offset, bool voiced) : hz(hz), energy(energy), tonality(tonality), tonalityNorm(tonalityNorm), offset(offset), voiced(voiced) {}
+	PitchEvent(float hz, float energy, float tonalityRaw, float tonality, size_t offset, bool voiced) : hz(hz), energy(energy), tonalityRaw(tonalityRaw), tonality(tonality), offset(offset), voiced(voiced) {}
 };
 
 struct PitchTrack {
@@ -122,6 +122,7 @@ struct PitchTrack {
 		reset();
 	}
 
+	// This sets the (raw) tonality thresholds, and post-processing tweaks to make the estimate more stable
 	void setTracking(float tonalityOn=0.7f, float tonalityOff=0.5f, float noiseDb=-60, float stickiness=0.5f, float jumpRatio=0.1f) {
 		thresholdTonalityOn = tonalityOn;
 		thresholdTonalityOff = tonalityOff;
@@ -156,7 +157,7 @@ struct PitchTrack {
 		voiced = 0;
 	}
 	
-	void block(const float *buffer, size_t length) {
+	void analyse(const float *buffer, size_t length) {
 		events.resize(0);
 		for (size_t i = 0; i < length; ++i) {
 			stft.writeInput(0, 1, buffer + i);
@@ -166,6 +167,9 @@ struct PitchTrack {
 				analyseBlock();
 			}
 		}
+	}
+	void analyze(const float *buffer, size_t length) {
+		return analyse(buffer, length);
 	}
 	
 	const std::vector<float> & debugHz() const {

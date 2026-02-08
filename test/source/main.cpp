@@ -60,7 +60,7 @@ int main(int argc, char *argv[]) {
 	signalsmith::Stopwatch stopwatch;
 	stopwatch.start();
 	// Process everything at once
-	tracker.block(input.data(), input.size());
+	tracker.analyse(input.data(), input.size());
 	auto seconds = stopwatch.seconds(stopwatch.lap());
 
 	auto inputSeconds = wav.length()/wav.sampleRate;
@@ -144,7 +144,7 @@ int main(int argc, char *argv[]) {
 			
 			for (size_t blockStart = 0; blockStart < input.size(); blockStart += blockSize) {
 				size_t actualBlockSize = std::min<size_t>(blockSize, input.size() - blockStart);
-				tracker.block(input.data() + blockStart, actualBlockSize);
+				tracker.analyze(input.data() + blockStart, actualBlockSize);
 				if (tracker.updates().empty()) continue;
 
 				auto &update = tracker.updates()[0];

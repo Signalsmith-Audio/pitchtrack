@@ -31,7 +31,7 @@ add_executable(analyse
 )
 
 add_subdirectory(../ parent-build)
-target_link_libraries(analyse PUBLIC signalsmith-pitch-tracker)
+target_link_libraries(analyse PUBLIC signalsmith-pitchtrack)
 
 include(FetchContent)
 FetchContent_Declare(
