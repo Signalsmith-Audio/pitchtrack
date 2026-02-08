@@ -327,7 +327,13 @@ private:
 			prevScore = bestScore;
 			prevScoreBand = bestB + bestFracB;
 		} else if (!step--) {
-			if (prevScore > 0) {
+			float totalEnergy = 0;
+			for (size_t b = 0; b < bands; ++b) {
+				totalEnergy += bandEnergy[b];
+			}
+			totalEnergy *= 15; // measured empirically, independent of FFT size and band density
+
+			if (prevScore > 0 && totalEnergy > thresholdEnergy) {
 				size_t bestB = std::floor(prevScoreBand);
 				float bestFracB = prevScoreBand - bestB;
 				float hz = bandHz[bestB]*std::pow(bandFreqRatio, bestFracB);
@@ -343,9 +349,7 @@ private:
 					if (d < 1) onEnergy += e*(1 - d*d);
 				}
 				float tonality = onEnergy/allEnergy;
-				if (allEnergy < thresholdEnergy) {
-					voiced = false;
-				} else if (tonality > thresholdTonalityOn) {
+				if (tonality > thresholdTonalityOn) {
 					voiced = true;
 				} else if (tonality < thresholdTonalityOff) {
 					voiced = false;
@@ -357,20 +361,16 @@ private:
 					}
 				}
 				prevHz = hz;
-				allEnergy = 0;
-				for (size_t b = 0; b < bands; ++b) {
-					allEnergy += bandEnergy[b];
-				}
 				float tonalityNorm = 0;
 				if (voiced) {
 					tonalityNorm = (tonality - thresholdTonalityOff)/(thresholdTonalityOn - thresholdTonalityOff);
 					tonalityNorm = std::max<float>(0, std::min<float>(1, tonalityNorm));
 				}
-				events.emplace_back(hz, allEnergy, tonality, tonalityNorm, blockOffset, voiced);
+				events.emplace_back(hz, totalEnergy, tonality, tonalityNorm, blockOffset, voiced);
 			} else {
 				voiced = false;
 				prevHz = -1;
-				events.emplace_back(0, 0, 0, 0, blockOffset, false);
+				events.emplace_back(0, totalEnergy, 0, 0, blockOffset, false);
 			}
 		}
 	}
