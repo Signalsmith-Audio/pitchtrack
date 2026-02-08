@@ -9,11 +9,12 @@ namespace signalsmith { namespace pitchtrack {
 
 struct PitchEvent {
 	float hz = 1, energy = 0, tonalityRaw = 0, tonality = 0;
+	float centroidHz = 5000;
 	size_t offset = 0;
 	bool voiced = false;
 	
 	PitchEvent() {}
-	PitchEvent(float hz, float energy, float tonalityRaw, float tonality, size_t offset, bool voiced) : hz(hz), energy(energy), tonalityRaw(tonalityRaw), tonality(tonality), offset(offset), voiced(voiced) {}
+	PitchEvent(float hz, float centroidHz, float energy, float tonalityRaw, float tonality, size_t offset, bool voiced) : hz(hz), energy(energy), tonalityRaw(tonalityRaw), tonality(tonality), centroidHz(centroidHz), offset(offset), voiced(voiced) {}
 };
 
 struct PitchTrack {
@@ -83,6 +84,7 @@ struct PitchTrack {
 		linear(bandScoreKernelSpectrum) = linear(bandScoreKernelSpectrum).conj();
 		
 		setTracking();
+		setStats();
 	}
 	
 	void configure(float sampleRate, size_t maxBlockSize=0, size_t latencySamples=0, float overlap=2.5) {
@@ -129,6 +131,9 @@ struct PitchTrack {
 		scoreStickiness = stickiness;
 		thresholdJumpRatio = jumpRatio;
 		thresholdEnergy = std::pow(10.0f, noiseDb/10);
+	}
+	void setStats(float centroid=0.5f) {
+		energyPercentile = centroid;
 	}
 
 	size_t latencySamples() const {
@@ -196,6 +201,7 @@ private:
 	float bandFreqRatio = 0, octaveBands = 0;
 	float prevScoreBand = 0, prevScore = 0, prevHz = -1;
 	bool voiced = false;
+	float energyPercentile = 0.5f;
 
 	std::vector<PitchEvent> events;
 	signalsmith::linear::DynamicSTFT<float> stft;
@@ -331,6 +337,17 @@ private:
 			for (size_t b = 0; b < bands; ++b) {
 				totalEnergy += bandEnergy[b];
 			}
+
+			float centroidHz = 5000;
+			float total2 = 0;
+			for (size_t b = 0; b < bands; ++b) {
+				total2 += bandEnergy[b];
+				if (total2 >= totalEnergy*energyPercentile) {
+					centroidHz = bandHz[b];
+					break;
+				}
+			}
+
 			totalEnergy *= 15; // measured empirically, independent of FFT size and band density
 
 			if (prevScore > 0 && totalEnergy > thresholdEnergy) {
@@ -366,11 +383,11 @@ private:
 					tonalityNorm = (tonality - thresholdTonalityOff)/(thresholdTonalityOn - thresholdTonalityOff);
 					tonalityNorm = std::max<float>(0, std::min<float>(1, tonalityNorm));
 				}
-				events.emplace_back(hz, totalEnergy, tonality, tonalityNorm, blockOffset, voiced);
+				events.emplace_back(hz, centroidHz, totalEnergy, tonality, tonalityNorm, blockOffset, voiced);
 			} else {
 				voiced = false;
 				prevHz = -1;
-				events.emplace_back(0, totalEnergy, 0, 0, blockOffset, false);
+				events.emplace_back(0, centroidHz, totalEnergy, 0, 0, blockOffset, false);
 			}
 		}
 	}
