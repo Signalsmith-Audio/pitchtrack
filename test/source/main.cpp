@@ -1,7 +1,7 @@
 #include <iostream>
 #define LOG_EXPR(expr) std::cout << #expr " = " << (expr) << std::endl;
 
-#include "pitchtrack/pitchtrack.h"
+#include "signalsmith-pitchtrack/pitchtrack.h"
 
 #include "signalsmith-util/simple-args.h"
 #include "signalsmith-util/wav.h"

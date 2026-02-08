@@ -8,9 +8,12 @@
 namespace signalsmith { namespace pitchtrack {
 
 struct PitchEvent {
-	float hz, tonality;
-	size_t offset;
-	bool voiced;
+	float hz = 1, energy = 0, tonality = 0, tonalityNorm = 0;
+	size_t offset = 0;
+	bool voiced = false;
+	
+	PitchEvent() {}
+	PitchEvent(float hz, float energy, float tonality, float tonalityNorm, size_t offset, bool voiced) : hz(hz), energy(energy), tonality(tonality), tonalityNorm(tonalityNorm), offset(offset), voiced(voiced) {}
 };
 
 struct PitchTrack {
@@ -119,11 +122,12 @@ struct PitchTrack {
 		reset();
 	}
 
-	void setTracking(float tonalityOn=0.7f, float tonalityOff=0.5f, float stickiness=0.5f, float jumpRatio=0.1f) {
+	void setTracking(float tonalityOn=0.7f, float tonalityOff=0.5f, float noiseDb=-60, float stickiness=0.5f, float jumpRatio=0.1f) {
 		thresholdTonalityOn = tonalityOn;
 		thresholdTonalityOff = tonalityOff;
 		scoreStickiness = stickiness;
 		thresholdJumpRatio = jumpRatio;
+		thresholdEnergy = std::pow(10.0f, noiseDb/10);
 	}
 
 	size_t latencySamples() const {
@@ -183,7 +187,7 @@ struct PitchTrack {
 private:
 	using Complex = std::complex<float>;
 
-	float thresholdTonalityOn = 0, thresholdTonalityOff = 0, scoreStickiness = 0, thresholdJumpRatio = 0;
+	float thresholdTonalityOn = 0, thresholdTonalityOff = 0, scoreStickiness = 0, thresholdJumpRatio = 0, thresholdEnergy = 0;
 
 	float bandFreqRatio = 0, octaveBands = 0;
 	float prevScoreBand = 0, prevScore = 0, prevHz = -1;
@@ -249,6 +253,21 @@ private:
 			score = linear(bandEnergy).sqrt();
 			score = score.sqrt();
 			score = score.sqrt();
+
+		/*
+		} else if (!step--) {
+			float smoothed = bandScore[0];
+			float slew = 1/(octaveBands + 1);
+			for (size_t b = 0; b < bands; ++b) {
+				bandScoreResult[b] = smoothed += (bandScore[b] - smoothed)*slew;
+			}
+			for (size_t b = bands; b-- > 0;) {
+				bandScoreResult[b] = smoothed += (bandScoreResult[b] - smoothed)*slew;
+			}
+			auto score = linear(bandScore.data(), bands);
+			score -= linear(bandScoreResult);
+		*/
+		} else if (!step--) {
 
 			energyFft.fft(bandScore.data(), bandScoreSpectrum.data());
 			linear(bandScoreSpectrum) *= linear(bandScoreKernelSpectrum);
@@ -320,7 +339,9 @@ private:
 					if (d < 1) onEnergy += e*(1 - d*d);
 				}
 				float tonality = onEnergy/allEnergy;
-				if (tonality > thresholdTonalityOn) {
+				if (allEnergy < thresholdEnergy) {
+					voiced = false;
+				} else if (tonality > thresholdTonalityOn) {
 					voiced = true;
 				} else if (tonality < thresholdTonalityOff) {
 					voiced = false;
@@ -332,11 +353,20 @@ private:
 					}
 				}
 				prevHz = hz;
-				events.push_back({hz, tonality, blockOffset, voiced});
+				allEnergy = 0;
+				for (size_t b = 0; b < bands; ++b) {
+					allEnergy += bandEnergy[b];
+				}
+				float tonalityNorm = 0;
+				if (voiced) {
+					tonalityNorm = (tonality - thresholdTonalityOff)/(thresholdTonalityOn - thresholdTonalityOff);
+					tonalityNorm = std::max<float>(0, std::min<float>(1, tonalityNorm));
+				}
+				events.emplace_back(hz, allEnergy, tonality, tonalityNorm, blockOffset, voiced);
 			} else {
 				voiced = false;
 				prevHz = -1;
-				events.push_back({0, 0, blockOffset, false});
+				events.emplace_back(0, 0, 0, 0, blockOffset, false);
 			}
 		}
 	}
