@@ -334,15 +334,17 @@ private:
 			prevScoreBand = bestB + bestFracB;
 		} else if (!step--) {
 			float totalEnergy = 0;
+			float totalEnergy2 = 0;
 			for (size_t b = 0; b < bands; ++b) {
 				totalEnergy += bandEnergy[b];
+				totalEnergy2 += bandEnergy[b]*bandHz[b];
 			}
 
 			float centroidHz = 5000;
 			float total2 = 0;
 			for (size_t b = 0; b < bands; ++b) {
-				total2 += bandEnergy[b];
-				if (total2 >= totalEnergy*energyPercentile) {
+				total2 += bandEnergy[b]*bandHz[b];
+				if (total2 >= totalEnergy2*energyPercentile) {
 					centroidHz = bandHz[b];
 					break;
 				}
