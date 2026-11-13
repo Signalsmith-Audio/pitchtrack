@@ -4,7 +4,7 @@
 #include "signalsmith-pitchtrack/pitchtrack.h"
 
 signalsmith::pitchtrack::PitchTrack tracker;
-tracker.config(sampleRate, maxBlockLength=0, latencySamples=<2ms>, overlap=<2.5>);
+tracker.configure(sampleRate, maxBlockLength=0, latencySamples=<2ms>, overlap=<2.5>);
 ```
 
 The `maxBlockLength` is optional, but providing it guarantees no allocations.  Latency is specified in samples, and shouldn't be greater than 10ms.  Higher latency uses less CPU, and increased overlap uses more, but I think the default configuration is pretty reasonable.
@@ -15,7 +15,7 @@ You pass the tracker a block of audio, but it doesn't give you any output.  Inst
 const float *floatSamples;
 tracker.analyse(floatSamples, length);
 
-for (auto &update : tracker.events()) {...}
+for (auto &update : tracker.updates()) {...}
 ```
 
 These update events (`signalsmith::pitchtrack::PitchEvent`) have:
